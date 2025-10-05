@@ -55,6 +55,10 @@ const (
 	defaultGRPCMaxMsgSize = 80 * 1024 * 1024
 	// default minimum memory for all other runtimes.
 	defaultContainerMinMemory = 12 * 1024 * 1024 // 12 MiB
+	// defaultContainerCreateTimeout is the default timeout for container creation operations in seconds.
+	defaultContainerCreateTimeout = 240
+	// minimumContainerCreateTimeout is the minimum allowed timeout for container creation operations in seconds.
+	minimumContainerCreateTimeout = 30
 	// minimum memory for crun, the default runtime.
 	defaultContainerMinMemoryCrun = 500 * 1024 // 500 KiB
 	OCIBufSize                    = 8192
@@ -271,6 +275,11 @@ type RuntimeHandler struct {
 	// Default annotations specified for runtime handler if they're not overridden by
 	// the pod spec.
 	DefaultAnnotations map[string]string `toml:"default_annotations,omitempty"`
+
+	// ContainerCreateTimeout is the timeout for container creation operations in seconds.
+	// If not set, defaults to 240 seconds.
+	ContainerCreateTimeout int64 `toml:"container_create_timeout,omitempty"`
+
 }
 
 // Multiple runtime Handlers in a map.
@@ -1355,8 +1364,9 @@ func getDefaultMonitorGroup(isSystemd bool) string {
 
 func defaultRuntimeHandler(isSystemd bool) *RuntimeHandler {
 	return &RuntimeHandler{
-		RuntimeType: DefaultRuntimeType,
-		RuntimeRoot: DefaultRuntimeRoot,
+		RuntimeType:            DefaultRuntimeType,
+		RuntimeRoot:            DefaultRuntimeRoot,
+		ContainerCreateTimeout: defaultContainerCreateTimeout,
 		AllowedAnnotations: []string{
 			annotations.OCISeccompBPFHookAnnotation,
 			annotations.DevicesAnnotation,
@@ -1725,7 +1735,13 @@ func (r *RuntimeHandler) Validate(name string) error {
 		logrus.Errorf("Unable to set minimum container memory for runtime handler %q: %v", name, err)
 	}
 
-	return r.ValidateNoSyncLog()
+	r.ValidateContainerCreateTimeout(name)
+
+	if err := r.ValidateNoSyncLog(); err != nil {
+		return fmt.Errorf("no sync log: %w", err)
+	}
+
+	return nil
 }
 
 func (r *RuntimeHandler) ValidateRuntimeVMBinaryPattern() bool {
@@ -1849,6 +1865,20 @@ func (r *RuntimeHandler) ValidateContainerMinMemory(name string) error {
 	logrus.Debugf("Runtime handler %q container minimum memory set to %d bytes", name, memorySize)
 
 	return nil
+}
+
+// ValidateContainerCreateTimeout sets the default container create timeout if not configured.
+func (r *RuntimeHandler) ValidateContainerCreateTimeout(name string) {
+	switch {
+	case r.ContainerCreateTimeout == 0:
+		r.ContainerCreateTimeout = defaultContainerCreateTimeout
+		logrus.Infof("Runtime handler %q container create timeout not set, using default: %d seconds", name, r.ContainerCreateTimeout)
+	case r.ContainerCreateTimeout < minimumContainerCreateTimeout:
+		logrus.Warnf("Runtime handler %q container create timeout (%d seconds) is less than minimum (%d seconds), setting to minimum: %d seconds", name, r.ContainerCreateTimeout, minimumContainerCreateTimeout, minimumContainerCreateTimeout)
+		r.ContainerCreateTimeout = minimumContainerCreateTimeout
+	default:
+		logrus.Infof("Runtime handler %q container create timeout set to: %d seconds", name, r.ContainerCreateTimeout)
+	}
 }
 
 // LoadRuntimeFeatures loads features for a given runtime handler using the "features"
